@@ -9,7 +9,7 @@
 const char* ssid = "m5core2";
 const char* password = "password1234";
 const char* ntpServer = "ntp.shoa.cl";
-const char* httpServer = "192.168.187.2";
+const char* httpServer = "192.168.4.2";
 char dataBuf[400];
 char debugBuf[50];
 extern SemaphoreHandle_t displaySemaphore;
@@ -41,9 +41,9 @@ void configRTCLocalTime() {
 }
 
 void start_wifi(void* _) {
-  //WiFi.softAP(ssid, password)
-  WiFi.begin(ssid, password);
-  
+  WiFi.softAP(ssid, password);
+  //WiFi.begin(ssid, password);
+  /*
   while(WiFi.status() != WL_CONNECTED) {
     writeToScreen(M5.Lcd.width(), M5.Lcd.height()-10, "Couldn't connect to network", RED, BLACK, right);
     delay(2000); // Wait 2s before checking connection again
@@ -52,15 +52,20 @@ void start_wifi(void* _) {
   writeToScreen(M5.Lcd.width(), M5.Lcd.height()-10, "Connected to network", WHITE, BLACK, right);
   Serial.println(WiFi.localIP());
   configRTCLocalTime();
+  */
   vTaskDelete(NULL);
 }
 
 void upload_data(void* _) {
   RTC_DateTypeDef RTC_DateStruct;
   RTC_TimeTypeDef RTC_TimeStruct;
+
+  /*
   while(WiFi.status() != WL_CONNECTED) {
     delay(1000); // Check for internet connection periodically
   }
+
+  */
   writeToScreen(0, M5.Lcd.height()-10, "Connecting...", RED, BLACK);
 
   while(Http.begin(httpServer, 8086, "/api/v2/write?org=weather-station-group&bucket=weather-records&precision=s") == 0) {
@@ -73,11 +78,19 @@ void upload_data(void* _) {
 
   while(true) {
     time_t cur_time = getUnixTimestamp();
-    sprintf(dataBuf, 
-    "weather,sensor_id=SFEWeatherMeterKit,location=test rain_fall=%f,wind_speed=%f,wind_direction=%f %d \n \
-    weather,sensor_id=bme280,location=test temperature=%f,humidity=%f,pressure=%f %d", 
-    weatherMeterKit.getTotalRainfall(), weatherMeterKit.getWindSpeed(), weatherMeterKit.getWindDirection(), cur_time, 
-    bme.temp(), bme.hum(), bme.pres(), cur_time);
+
+    #ifdef DEBUG
+      sprintf(dataBuf, 
+      "weather,sensor_id=SFEWeatherMeterKit,location=test rain_fall=%f,wind_speed=%f,wind_direction=%f %d \n \
+      weather,sensor_id=bme280,location=test temperature=%f,humidity=%f,pressure=%f %d", 
+      weatherMeterKit.getTotalRainfall(), weatherMeterKit.getWindSpeed(), weatherMeterKit.getWindDirection(), cur_time, 
+      bme.temp(), bme.hum(), bme.pres(), cur_time);
+    #else
+      sprintf(dataBuf, 
+      "weather,sensor_id=SFEWeatherMeterKit,location=test rain_fall=12,wind_speed=100,wind_direction=210 %d \n \
+      weather,sensor_id=bme280,location=test temperature=32,humidity=45,pressure=1010 %d", 
+      cur_time, cur_time);
+    #endif
     writeToScreen(0, M5.Lcd.height()-10, "POSTing to db...         ");
     int httpCode = Http.POST(dataBuf);
     delay(5000);

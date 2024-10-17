@@ -31,11 +31,15 @@ https://github.com/sparkfun/SparkFun_Weather_Meter_Kit_Arduino_Library
 #include "SparkFun_Weather_Meter_Kit_Arduino_Library.h"
 
 // Enable BME280
-#define BME_ENABLE 1
+//#define BME_ENABLE
 #include "BME280I2C.h"
+
+// Send data without sensors
+#define DEBUG
 
 #include "helper.h"
 #include "network.h"
+#include "console.h"
 
 // RTC definitions
 RTC_TimeTypeDef RTCtime;
@@ -153,7 +157,7 @@ void display_screen(void* _) {
 
 
 void setup() {
-  M5.begin(true, true, true, true); //Init M5Core2.
+  M5.begin(true, true, false, true); //Init M5Core2.
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.setCursor(10, title_row);
   M5.Lcd.setTextSize(font_size);
@@ -167,6 +171,8 @@ void setup() {
   BaseType_t wiFiTask;
   TaskHandle_t wiFiHandle = NULL;
   xTaskCreate(start_wifi, "start_wifi", 4096, NULL, 1, &wiFiHandle);
+  init_console();
+  /*
   Serial.begin(115200);
   Serial.print("\n");
   Serial.println(F("Testing the rain fall thingy"));
@@ -175,6 +181,7 @@ void setup() {
     Serial.println(F("Unknown platform! Please edit the code with your ADC resolution!"));
     Serial.println();
   #endif
+  */
   weatherMeterKit.begin();
 
   #ifdef BME_ENABLE
