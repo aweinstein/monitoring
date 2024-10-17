@@ -6,6 +6,12 @@ SparkFun Weather Meter Library:
 https://github.com/sparkfun/SparkFun_Weather_Meter_Kit_Arduino_Library
 
 */
+
+/* TODO:
+- Replace all usage of delay() with checking for elapsed time via RTC
+-
+
+*/
 #define font_size 1
 
 // Text distribution on screen
@@ -15,18 +21,25 @@ https://github.com/sparkfun/SparkFun_Weather_Meter_Kit_Arduino_Library
 #define anemometer_row 4 * font_size * 10
 #define vane_row 5 * font_size * 10
 #define temp_row 6 * font_size * 10
-#define atm_row 7 * font_size * 10
-#define humidity_row 8 * font_size * 10
+#define hum_row 7 * font_size * 10
+#define pres_row 8 * font_size * 10
 
 #include <freertos/semphr.h>
 #include <M5Core2.h>
 #include <WiFi.h>
 #include "time.h"
 #include "SparkFun_Weather_Meter_Kit_Arduino_Library.h"
+
+// Enable BME280
+//#define BME_ENABLE
 #include "BME280I2C.h"
+
+// Send data without sensors
+#define DEBUG
 
 #include "helper.h"
 #include "network.h"
+#include "console.h"
 
 // RTC definitions
 RTC_TimeTypeDef RTCtime;
@@ -38,15 +51,21 @@ struct tm timeinfo;
 SemaphoreHandle_t displaySemaphore = NULL;
 
 // Weather station definitions
-int rain_fall_pin = 27;  // TODO: Find the right value
-int wind_direction_pin = 35; // TODO: Find the right value
-int wind_speed_pin = 14; // TODO: Find the right value
-int temperature_pin = 6; // TODO: Find the right value
-int pressure_pin =  7; // TODO: Find the right value
-int humidity_pin = 8; // TODO: Find the right value
+int rain_fall_pin = 27;
+int wind_direction_pin = 35; 
+int wind_speed_pin = 19; 
 SFEWeatherMeterKit weatherMeterKit(wind_direction_pin, wind_speed_pin, rain_fall_pin);
 
-//BME280I2C bme(bme_settings);
+BME280I2C::Settings bmeSettings(
+  BME280::OSR_X1, 
+  BME280::OSR_X1, 
+  BME280::OSR_X1, 
+  BME280::Mode_Forced, 
+  BME280::StandbyTime_1000ms, 
+  BME280::Filter_16, 
+  BME280::SpiEnable_False, 
+  BME280I2C::I2CAddr_0x76); 
+BME280I2C bme(bmeSettings);
 
 void print_time() {
   M5.Rtc.GetTime(&RTCtime);
@@ -71,8 +90,19 @@ void print_weatherkit_data() {
   sprintf(weatherStrbuff, "Wind Vane: %0.1f [deg]\n", weatherMeterKit.getWindDirection());
   writeToScreen(10, vane_row, weatherStrbuff);
 
-  // Implement temp displays via GPIO
-  // ...
+  #ifdef BME_ENABLE
+    // Temperature
+    sprintf(weatherStrbuff, "Temperature: %0.1f [C]]\n", bme.temp());
+    writeToScreen(10, temp_row, weatherStrbuff);
+
+    // Humidity
+    sprintf(weatherStrbuff, "Humidity: %0.1f [deg]\n", bme.hum());
+    writeToScreen(10, hum_row, weatherStrbuff);
+
+    // Pressure
+    sprintf(weatherStrbuff, "Pressure: %0.1f [deg]\n", bme.pres());
+    writeToScreen(10, pres_row, weatherStrbuff);
+  #endif
 }
 
 void store_weatherkit_data(void* _) {
@@ -94,6 +124,16 @@ void store_weatherkit_data(void* _) {
       file.printf(SDStrbuff);
       sprintf(SDStrbuff, ",%f", weatherMeterKit.getWindDirection());
       file.printf(SDStrbuff);
+
+      #ifdef BME_ENABLE
+        sprintf(SDStrbuff, ",%f", bme.temp());
+        file.printf(SDStrbuff);
+        sprintf(SDStrbuff, ",%f", bme.hum());
+        file.printf(SDStrbuff);
+        sprintf(SDStrbuff, ",%f", bme.pres());
+        file.printf(SDStrbuff);
+      #endif
+
       file.println("");
       file.close();
       writeToScreen((M5.Lcd.width()-(11*6))/2, 120, "Wrote to SD");
@@ -117,14 +157,22 @@ void display_screen(void* _) {
 
 
 void setup() {
-  M5.begin(); //Init M5Core2.
+  M5.begin(true, true, false, true); //Init M5Core2.
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.setCursor(10, title_row);
   M5.Lcd.setTextSize(font_size);
   M5.Lcd.print("SparkFun Weather Kit");
+  displaySemaphore = xSemaphoreCreateBinary();
+  if(displaySemaphore == NULL) {
+    Serial.println("Failed to initialize display semaphore! Aborting...");
+    return;
+  }
+  xSemaphoreGive(displaySemaphore);
   BaseType_t wiFiTask;
   TaskHandle_t wiFiHandle = NULL;
   xTaskCreate(start_wifi, "start_wifi", 4096, NULL, 1, &wiFiHandle);
+  init_console();
+  /*
   Serial.begin(115200);
   Serial.print("\n");
   Serial.println(F("Testing the rain fall thingy"));
@@ -133,14 +181,29 @@ void setup() {
     Serial.println(F("Unknown platform! Please edit the code with your ADC resolution!"));
     Serial.println();
   #endif
+  */
   weatherMeterKit.begin();
-  //bme.begin();
-  displaySemaphore = xSemaphoreCreateBinary();
-  if(displaySemaphore == NULL) {
-    Serial.println("Failed to initialize display semaphore! Aborting...");
-    return;
-  }
-  xSemaphoreGive(displaySemaphore);
+
+  #ifdef BME_ENABLE
+    while(!bme.begin())
+    {
+      Serial.println("Could not find BME280 sensor!");
+      delay(1000);
+    }
+
+    switch(bme.chipModel())
+    {
+      case BME280::ChipModel_BME280:
+        Serial.println("Found BME280 sensor! Success.");
+        break;
+      case BME280::ChipModel_BMP280:
+        Serial.println("Found BMP280 sensor! No Humidity available.");
+        break;
+      default:
+        Serial.println("Found UNKNOWN sensor! Error!");
+    }
+  #endif
+
   xTaskCreate(display_screen, "display_screen", 4096, NULL, 1, NULL); // Render screen
   xTaskCreate(store_weatherkit_data, "store_weatherkit_data", 4096, NULL, 2, NULL); // Write to SD
   xTaskCreate(upload_data, "upload_data", 4096*2, NULL, 3, NULL); // Write to web server

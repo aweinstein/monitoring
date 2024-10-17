@@ -25,6 +25,7 @@ void writeToScreen(int x, int y, char* str, uint16_t textColor, uint16_t bgColor
   xSemaphoreGive(displaySemaphore);
 }
 
+// Retrieves unix time from the RTC
 time_t getUnixTimestamp() {
   RTC_DateTypeDef RTCDate;
   RTC_TimeTypeDef RTCTime;
