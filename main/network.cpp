@@ -6,16 +6,18 @@
 #include "network.h"
 #include "helper.h"
 
-
-const char* ssid = "SSID";
-const char* password = "password";
+const char* ssid = "m5core2";
+const char* password = "password1234";
 const char* ntpServer = "ntp.shoa.cl";
-const char* httpServer = "192.168.0.123";
+const char* httpServer = "192.168.4.2";
 char dataBuf[400];
-char debugBuf[100];
-// Includes user ID, not sure if important to separate 
+char debugBuf[50];
 extern SemaphoreHandle_t displaySemaphore;
 
+#include "BME280I2C.h"
+#include "SparkFun_Weather_Meter_Kit_Arduino_Library.h"
+extern BME280I2C bme;
+extern SFEWeatherMeterKit weatherMeterKit;
 HTTPClient Http;
 
 void configRTCLocalTime() {
@@ -39,8 +41,9 @@ void configRTCLocalTime() {
 }
 
 void start_wifi(void* _) {
-  WiFi.begin(ssid, password);
-
+  WiFi.softAP(ssid, password);
+  //WiFi.begin(ssid, password);
+  /*
   while(WiFi.status() != WL_CONNECTED) {
     writeToScreen(M5.Lcd.width(), M5.Lcd.height()-10, "Couldn't connect to network", RED, BLACK, right);
     delay(2000); // Wait 2s before checking connection again
@@ -49,37 +52,45 @@ void start_wifi(void* _) {
   writeToScreen(M5.Lcd.width(), M5.Lcd.height()-10, "Connected to network", WHITE, BLACK, right);
   Serial.println(WiFi.localIP());
   configRTCLocalTime();
+  */
   vTaskDelete(NULL);
 }
 
 void upload_data(void* _) {
   RTC_DateTypeDef RTC_DateStruct;
   RTC_TimeTypeDef RTC_TimeStruct;
+
+  /*
   while(WiFi.status() != WL_CONNECTED) {
     delay(1000); // Check for internet connection periodically
   }
+
+  */
   writeToScreen(0, M5.Lcd.height()-10, "Connecting...", RED, BLACK);
-  Http.begin(httpServer, 8086, "/api/v2/write?org=weather-station-group&bucket=weather-records&precision=s");
+
+  while(Http.begin(httpServer, 8086, "/api/v2/write?org=weather-station-group&bucket=weather-records&precision=s") == 0) {
+    writeToScreen(0, M5.Lcd.height()-10, "Failed to connect to server    ");
+    delay(6000); // Attempt to connect periodically
+  }
+
   Http.addHeader("Content-Type", "text/plain; charset=utf-8");
-  Http.addHeader("Authorization", "Token token");
+  Http.addHeader("Authorization", "Token fhXh88keqv2kLUkhEsgDYMiyUOJcGhUebRp93gzu3v_iB-0mFIHgOWZVl__SO89bD3lH-UvBLWjsD88741tFyw==");
+
   while(true) {
-    /*
-    sprintf(dataBuf, " \
-    { \
-      \"create_time\": \"%d/%02d/%02d %02d:%02d:%02d\", \
-      \"rain_fall\": 1, \
-      \"wind_speed\": 2, \
-      \"wind_direction\": 3, \
-      \"temperature\": 4, \
-      \"pressure\": 5, \
-      \"humidity\": 6 \
-    } \
-    ", RTC_DateStruct.Year, RTC_DateStruct.Month, RTC_DateStruct.Date, 
-      RTC_TimeStruct.Hours, RTC_TimeStruct.Minutes, RTC_TimeStruct.Seconds);
-    */
     time_t cur_time = getUnixTimestamp();
-    sprintf(dataBuf, 
-    "weather,sensor_id=SFEWeatherMeterKit,location=test rain_fall=73.97038159354763,wind_speed=35.23103248356096,wind_direction=0.48445310567793615 %d", cur_time, cur_time);
+
+    #ifdef DEBUG
+      sprintf(dataBuf, 
+      "weather,sensor_id=SFEWeatherMeterKit,location=test rain_fall=%f,wind_speed=%f,wind_direction=%f %d \n \
+      weather,sensor_id=bme280,location=test temperature=%f,humidity=%f,pressure=%f %d", 
+      weatherMeterKit.getTotalRainfall(), weatherMeterKit.getWindSpeed(), weatherMeterKit.getWindDirection(), cur_time, 
+      bme.temp(), bme.hum(), bme.pres(), cur_time);
+    #else
+      sprintf(dataBuf, 
+      "weather,sensor_id=SFEWeatherMeterKit,location=test rain_fall=12,wind_speed=100,wind_direction=210 %d \n \
+      weather,sensor_id=bme280,location=test temperature=32,humidity=45,pressure=1010 %d", 
+      cur_time, cur_time);
+    #endif
     writeToScreen(0, M5.Lcd.height()-10, "POSTing to db...         ");
     int httpCode = Http.POST(dataBuf);
     delay(5000);
@@ -87,5 +98,6 @@ void upload_data(void* _) {
     writeToScreen(0, M5.Lcd.height()-10, debugBuf);
     delay(5000); // Send again every 10 seconds
   }
+  
   vTaskDelete(NULL);
 }
