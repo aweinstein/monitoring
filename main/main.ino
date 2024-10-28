@@ -7,11 +7,6 @@ https://github.com/sparkfun/SparkFun_Weather_Meter_Kit_Arduino_Library
 
 */
 
-/* TODO:
-- Replace all usage of delay() with checking for elapsed time via RTC
--
-
-*/
 #define font_size 1
 
 // Text distribution on screen
@@ -24,18 +19,26 @@ https://github.com/sparkfun/SparkFun_Weather_Meter_Kit_Arduino_Library
 #define hum_row 7 * font_size * 10
 #define pres_row 8 * font_size * 10
 
+// Timer periods in milliseconds
+#define TIMER_PERIOD 10 * 1000 
+
+// Queue size for threads
+#define STORAGE_QUEUE 50
+#define NETWORK_QUEUE 200
+
 #include <freertos/semphr.h>
 #include <M5Core2.h>
 #include <WiFi.h>
 #include "time.h"
 #include "SparkFun_Weather_Meter_Kit_Arduino_Library.h"
+#include "esp_console.h"
 
 // Enable BME280
 //#define BME_ENABLE
 #include "BME280I2C.h"
 
 // Send data without sensors
-#define DEBUG
+//#define DEBUG
 
 #include "helper.h"
 #include "network.h"
@@ -54,6 +57,8 @@ SemaphoreHandle_t displaySemaphore = NULL;
 int rain_fall_pin = 27;
 int wind_direction_pin = 35; 
 int wind_speed_pin = 19; 
+
+// Global variables
 SFEWeatherMeterKit weatherMeterKit(wind_direction_pin, wind_speed_pin, rain_fall_pin);
 
 BME280I2C::Settings bmeSettings(
@@ -67,6 +72,15 @@ BME280I2C::Settings bmeSettings(
   BME280I2C::I2CAddr_0x76); 
 BME280I2C bme(bmeSettings);
 
+bool catchupActive = false;
+TimerHandle_t threadTimer;
+TaskHandle_t networkThread;
+TaskHandle_t storageThread;
+QueueHandle_t storageQueue;
+QueueHandle_t networkQueue;
+sensor_data storageData;
+
+// Functions
 void print_time() {
   M5.Rtc.GetTime(&RTCtime);
   M5.Rtc.GetDate(&RTCDate);
@@ -82,7 +96,7 @@ void print_weatherkit_data() {
   writeToScreen(10, rain_row, weatherStrbuff);
 
   // Anemometer
-  sprintf(weatherStrbuff, "Wind Speed: %0.5f [k/h]\n", weatherMeterKit.getWindSpeed());
+  sprintf(weatherStrbuff, "Wind Speed: %0.5f [km/h]\n", weatherMeterKit.getWindSpeed());
   writeToScreen(10, anemometer_row, weatherStrbuff);
 
   // Wind vane
@@ -91,7 +105,7 @@ void print_weatherkit_data() {
   writeToScreen(10, vane_row, weatherStrbuff);
 
   #ifdef BME_ENABLE
-    // Temperature
+    // Temperature (BME does not provide a precise reading)
     sprintf(weatherStrbuff, "Temperature: %0.1f [C]]\n", bme.temp());
     writeToScreen(10, temp_row, weatherStrbuff);
 
@@ -105,10 +119,12 @@ void print_weatherkit_data() {
   #endif
 }
 
-void store_weatherkit_data(void* _) {
+void store_data(void* _) {
   while(1) {
+    // Wait to receive data from queue
+    xQueueReceive(storageQueue, &storageData, portMAX_DELAY);
+    writeToScreen((M5.Lcd.width()-(11*6))/2, 120, "                      ");
     // Create new log every day
-    M5.Rtc.GetTime(&RTCtime);
     M5.Rtc.GetDate(&RTCDate);
     sprintf(SDStrbuff, "/weather-data_%d-%02d-%02d.csv", RTCDate.Year, 
           RTCDate.Month, RTCDate.Date);
@@ -118,32 +134,29 @@ void store_weatherkit_data(void* _) {
           RTCDate.Month, RTCDate.Date, RTCtime.Hours, RTCtime.Minutes,
           RTCtime.Seconds);
       file.printf(SDStrbuff);
-      sprintf(SDStrbuff, ",%f", weatherMeterKit.getTotalRainfall());
+      sprintf(SDStrbuff, ",%f", storageData.rain_fall);
       file.printf(SDStrbuff);
-      sprintf(SDStrbuff, ",%f", weatherMeterKit.getWindSpeed());
+      sprintf(SDStrbuff, ",%f", storageData.wind_speed);
       file.printf(SDStrbuff);
-      sprintf(SDStrbuff, ",%f", weatherMeterKit.getWindDirection());
+      sprintf(SDStrbuff, ",%f", storageData.wind_direction);
+      file.printf(SDStrbuff);
+      sprintf(SDStrbuff, ",%f", storageData.temperature);
+      file.printf(SDStrbuff);
+      sprintf(SDStrbuff, ",%f", storageData.humidity);
+      file.printf(SDStrbuff);
+      sprintf(SDStrbuff, ",%f", storageData.pressure);
       file.printf(SDStrbuff);
 
-      #ifdef BME_ENABLE
-        sprintf(SDStrbuff, ",%f", bme.temp());
-        file.printf(SDStrbuff);
-        sprintf(SDStrbuff, ",%f", bme.hum());
-        file.printf(SDStrbuff);
-        sprintf(SDStrbuff, ",%f", bme.pres());
-        file.printf(SDStrbuff);
-      #endif
-
-      file.println("");
+      file.printf("\n");
       file.close();
       writeToScreen((M5.Lcd.width()-(11*6))/2, 120, "Wrote to SD");
     } 
     else {
-      writeToScreen((M5.Lcd.width()-(11*6))/2, 120, "Error al abrir el archivo", RED, BLACK);
+      writeToScreen((M5.Lcd.width()-(11*6))/2, 120, "Error writing to file", RED, BLACK);
     }
-    delay(3000);
-    writeToScreen((M5.Lcd.width()-(11*6))/2, 120, "                ");
-    delay(7000);
+    sleep(2000);
+    writeToScreen((M5.Lcd.width()-(11*6))/2, 120, "                            ");
+    sleep(1000);
   }
 }
 
@@ -155,6 +168,33 @@ void display_screen(void* _) {
   }
 }
 
+/* 
+  Callback function for timer to read and queue data to other threads
+  TODO: Use this callback function to check thread status if necessary
+*/
+void timer_pushData(TimerHandle_t timer) {
+  time_t cur_time = getUnixTimestamp();
+  float temp = bme.temp();
+  float hum = bme.hum();
+  float pres = bme.pres();
+  if(isnan(temp)) 
+    temp = 0;
+  if(isnan(hum)) 
+    hum = 0;
+  if(isnan(pres)) 
+    pres = 0;
+  sensor_data data = {
+    .rain_fall = weatherMeterKit.getTotalRainfall(),
+    .wind_speed = weatherMeterKit.getWindSpeed(),
+    .wind_direction = weatherMeterKit.getWindDirection(),
+    .temperature = temp,
+    .humidity = hum,
+    .pressure = pres,
+    .timestamp = getUnixTimestamp(),
+  };
+  xQueueSend(networkQueue, &data, 100);
+  xQueueSend(storageQueue, &data, 100);
+}
 
 void setup() {
   M5.begin(true, true, false, true); //Init M5Core2.
@@ -164,49 +204,58 @@ void setup() {
   M5.Lcd.print("SparkFun Weather Kit");
   displaySemaphore = xSemaphoreCreateBinary();
   if(displaySemaphore == NULL) {
-    Serial.println("Failed to initialize display semaphore! Aborting...");
+    printf("Failed to initialize display semaphore! Aborting...\n");
     return;
   }
   xSemaphoreGive(displaySemaphore);
-  BaseType_t wiFiTask;
-  TaskHandle_t wiFiHandle = NULL;
-  xTaskCreate(start_wifi, "start_wifi", 4096, NULL, 1, &wiFiHandle);
   init_console();
-  /*
-  Serial.begin(115200);
-  Serial.print("\n");
-  Serial.println(F("Testing the rain fall thingy"));
+  int err = 0;
+  esp_console_run("wificonf ap m5core2 password1234", &err);
+  if(err) {
+    writeToScreen(M5.Lcd.width(), M5.Lcd.height()-10, "Couldn't start AP", RED, BLACK, right);
+  };
+  esp_console_run("dbconf 192.168.4.2 8086", &err);
   #ifdef SFE_WMK_PLAFTORM_UNKNOWN
     weatherMeterKit.setADCResolutionBits(10);
-    Serial.println(F("Unknown platform! Please edit the code with your ADC resolution!"));
-    Serial.println();
+    printf(F("Unknown platform! Please edit the code with your ADC resolution!\n"));
   #endif
-  */
   weatherMeterKit.begin();
 
   #ifdef BME_ENABLE
     while(!bme.begin())
     {
-      Serial.println("Could not find BME280 sensor!");
+      printf("Could not find BME280 sensor!\n");
       delay(1000);
     }
 
     switch(bme.chipModel())
     {
       case BME280::ChipModel_BME280:
-        Serial.println("Found BME280 sensor! Success.");
+        printf("Found BME280 sensor! Success.\n");
         break;
       case BME280::ChipModel_BMP280:
-        Serial.println("Found BMP280 sensor! No Humidity available.");
+        printf("Found BMP280 sensor! No Humidity available.\n");
         break;
       default:
-        Serial.println("Found UNKNOWN sensor! Error!");
+        printf("Found UNKNOWN sensor! Error!\n");
     }
   #endif
 
+  // Initialize queues for storage and network threads
+  storageQueue = xQueueCreate(STORAGE_QUEUE, sizeof(sensor_data));
+  networkQueue = xQueueCreate(NETWORK_QUEUE, sizeof(sensor_data));
+
+  if(storageQueue == NULL || networkQueue == NULL) {
+    printf("CRITICAL: Failed to initialize queue, not enough memory!\n");
+  }
   xTaskCreate(display_screen, "display_screen", 4096, NULL, 1, NULL); // Render screen
-  xTaskCreate(store_weatherkit_data, "store_weatherkit_data", 4096, NULL, 2, NULL); // Write to SD
-  xTaskCreate(upload_data, "upload_data", 4096*2, NULL, 3, NULL); // Write to web server
+  xTaskCreate(store_data, "store_data", 4096, NULL, 2, &storageThread); // Write to SD
+  xTaskCreate(upload_data, "upload_data", 4096*2, NULL, 3, &networkThread); // Write to web server
+
+  threadTimer = xTimerCreate("threadTimer", pdMS_TO_TICKS(TIMER_PERIOD), pdTRUE, (void*) 0, timer_pushData);
+  if(xTimerStart(threadTimer, 100) == pdFAIL) {
+    printf("CRITICAL: Failed to start thread timer!\n");
+  }
 }
 
 void loop() {

@@ -1,5 +1,7 @@
 /*
   Helper functions, primarily to avoid race conditions between tasks
+
+  TODO: Add screen write function that clears after certain time has passed
 */
 #include <M5Core2.h>
 #include <time.h>
@@ -36,6 +38,7 @@ time_t getUnixTimestamp() {
           RTCTime.Seconds);
   struct tm time = {0};
   if(strptime(unixStrBuff, "%Y/%m/%d %H:%M:%S", &time) != NULL) {
+    time.tm_isdst = _daylight;
     return mktime(&time);
   }
   else {
