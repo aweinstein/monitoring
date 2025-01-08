@@ -35,12 +35,11 @@ void configRTCLocalTime() {
   RTC_DateTypeDef RTC_DateStruct;
   RTC_TimeTypeDef RTC_TimeStruct;
   
-  configTime(-4 * 3600, 3600, ntpServer);
+  configTime(0, 0, ntpServer);
+  setenv("TZ", "<-04>4<-03>,M9.1.6/24,M4.1.6/24", 1);
+  tzset();
   while(!getLocalTime(&timeinfo)) {
     delay(500); // Wait until the local time is obtained
-  }
-  if(timeinfo.tm_isdst) {
-
   }
   RTC_DateStruct.WeekDay = timeinfo.tm_wday;
   RTC_DateStruct.Date = timeinfo.tm_mday;
@@ -63,7 +62,8 @@ bool start_wifi_cmd(const char* ssid, const char* password, bool isAP) {
   WiFi.begin(ssid, password);
   while(WiFi.status() != WL_CONNECTED) {
     writeToScreen(M5.Lcd.width(), M5.Lcd.height()-10, "Couldn't connect to network", RED, BLACK, right);
-    delay(1000); // Wait 2s before checking connection again
+    delay(1000); // Wait 1s before checking connection again
+    writeToScreen(M5.Lcd.width(), M5.Lcd.height()-10, "                              ", WHITE, BLACK, right);
     if(!xTimerIsTimerActive(timer)) {
       printf("Gave up on connecting to network\n");
       return false;
@@ -73,6 +73,8 @@ bool start_wifi_cmd(const char* ssid, const char* password, bool isAP) {
   writeToScreen(M5.Lcd.width(), M5.Lcd.height()-10, "Connected to network", WHITE, BLACK, right);
   printf("IP address obtained: %s\n", WiFi.localIP().toString().c_str());
   configRTCLocalTime();
+  delay(1000);
+  writeToScreen(M5.Lcd.width(), M5.Lcd.height()-10, "                              ", WHITE, BLACK, right);
   return true;
 }
 
@@ -88,11 +90,10 @@ void start_http_server(const char* httpServer, const int port) {
   if(!Http.begin(httpServer, port, "/api/v2/write?org=weather-station-group&bucket=weather-records&precision=s")) {
     printf("Failed to connect to server\n");
     return;
-    //delay(6000); // Attempt to connect periodically
   }
   printf("Connection was successful\n");
   Http.addHeader("Content-Type", "text/plain; charset=utf-8");
-  Http.addHeader("Authorization", "Token fhXh88keqv2kLUkhEsgDYMiyUOJcGhUebRp93gzu3v_iB-0mFIHgOWZVl__SO89bD3lH-UvBLWjsD88741tFyw==");
+  Http.addHeader("Authorization", "Token pmSEgLNxbcXsM5r0M2foylcUYPna-M3uz2v5oCmAMlCHihqJaCXsb-4Ehy5cP84UjeMUXbN5K2Y-p0boAxVs7w==");
   httpActive = true;
   return;
 }
@@ -103,31 +104,21 @@ void upload_data(void* _) {
     while(!httpActive) {
       sleep(5000);
     }
-    /*
-    time_t cur_time = getUnixTimestamp();
-    float temp = bme.temp();
-    float hum = bme.hum();
-    float pres = bme.pres();
-    if(isnan(temp)) {
-      temp = 0;
-    }
-    if(isnan(hum)) {
-      hum = 0;
-    }
-    if(isnan(pres)) {
-      pres = 0;
-    }
-    */
+    if(isnan(data.humidity))
+      data.humidity = 0;
+    if(isnan(data.pressure))
+      data.pressure = 0;
+    if(isnan(data.temperature))
+      data.temperature = 0;
     sprintf(dataBuf, 
       "weather,sensor_id=SFEWeatherMeterKit,location=test rain_fall=%f,wind_speed=%f,wind_direction=%f %d \n \
       weather,sensor_id=bme280,location=test temperature=%f,humidity=%f,pressure=%f %d", 
       data.rain_fall, data.wind_speed, data.wind_direction, data.timestamp, 
       data.temperature, data.humidity, data.pressure, data.timestamp);
-    //#endif
-    
+
     while(true) {
       int httpCode = Http.POST(dataBuf);
-      writeToScreen(0, M5.Lcd.height()-10, "                                       ");
+      clearRegion(0, M5.Lcd.height()-10, 30);
       if(httpCode == 204) {
         writeToScreen(0, M5.Lcd.height()-10, "Sent data successfully");
         break;
@@ -138,16 +129,16 @@ void upload_data(void* _) {
         while(i < MAX_ATTEMPTS) {
           writeToScreen(0, M5.Lcd.height()-10, "Failed to send data");
           delay(3000);
-          writeToScreen(0, M5.Lcd.height()-10, "                                    ");
+          clearRegion(0, M5.Lcd.height()-10, 30);
           delay(1000);
           i++;
         }
       }
-      printf("Returned %d, dropping packet\n", httpCode);
+      //printf("Returned %d, dropping packet\n", httpCode);
       sprintf(debugBuf, "Returned %d, dropping packet", httpCode);
       writeToScreen(0, M5.Lcd.height()-10, debugBuf);
       delay(3000);
-      writeToScreen(0, M5.Lcd.height()-10, "                                          ");
+      clearRegion(0, M5.Lcd.height()-10, strlen(debugBuf));
     }
   }
   vTaskDelete(NULL);
